@@ -125,13 +125,19 @@ class DBStore {
 		return 'CREATE TABLE IF NOT EXISTS `' . $this->getTableName() . '` (`id` INT NOT NULL AUTO_INCREMENT , ' . implode(', ', $columns) . ', PRIMARY KEY (`id`));';
 	}
 
-	public static function generateAllTableStructures(): void {
-		$classes = scandir(__DIR__);
+	public static function generateAllTableStructures(string $dir = __DIR__): void {
+		$classes = self::scanAllDir($dir);
+
 		foreach ($classes as $class) {
 			if (!str_ends_with($class, '.php')) {
 				continue;
 			}
-			$className = strtok($class, '.');
+			$className = strtok(str_replace('/', '\\', $class), '.');
+
+			if (!is_subclass_of($className, self::class)) {
+				continue;
+			}
+
 			$reflection = new ReflectionClass($className);
 			$paramsToFill = [];
 			$constructor = $reflection->getConstructor();
@@ -139,6 +145,9 @@ class DBStore {
 				$params = $constructor->getParameters();
 				foreach ($params as $param) {
 					switch ($param->getType()) {
+						default:
+							$paramsToFill[] = null;
+							break;
 						case 'string':
 							$paramsToFill[] = '';
 							break;
@@ -149,10 +158,24 @@ class DBStore {
 				}
 			}
 			$instance = new $className(...$paramsToFill);
-			if (!is_subclass_of($instance, self::class)) {
-				continue;
-			}
+
 			echo $instance->generateTableStructure() . "<br>";
 		}
+	}
+
+	private static function scanAllDir($dir) {
+		$result = [];
+		foreach (scandir($dir) as $filename) {
+			if ($filename[0] === '.') continue;
+			$filePath = $dir . '/' . $filename;
+			if (is_dir($filePath)) {
+				foreach (self::scanAllDir($filePath) as $childFilename) {
+					$result[] = $filename . '/' . $childFilename;
+				}
+			} else {
+				$result[] = $filename;
+			}
+		}
+		return $result;
 	}
 }
