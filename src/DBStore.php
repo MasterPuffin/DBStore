@@ -86,7 +86,7 @@ class DBStore {
 	}
 
 	private function getTableName(): string {
-		return strtolower(get_class($this));
+		return str_replace('\\', '_', str_replace('/', '_', strtolower(get_class($this))));
 	}
 
 	public function generateTableStructure(): string {
