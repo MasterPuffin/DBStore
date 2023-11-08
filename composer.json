@@ -1,0 +1,24 @@
+{
+  "name": "masterpuffin/dbstore",
+  "description": "DBStore",
+  "version": "1.0.0",
+  "type": "library",
+  "license": "MIT",
+  "autoload": {
+    "classmap": [
+      "src/DBStore.php"
+    ]
+  },
+  "authors": [
+    {
+      "name": "MasterPuffin",
+      "email": "git@pxmo.de"
+    }
+  ],
+  "minimum-stability": "stable",
+  "require": {
+    "masterpuffin/sql": "*",
+    "php": ">=8.0",
+    "ext-mysqli": "*"
+  }
+}
