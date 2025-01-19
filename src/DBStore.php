@@ -98,7 +98,7 @@ class DBStore {
 	}
 
 	private static function S_getDbTableName($context): string {
-		return str_replace('\\', '_', str_replace('/', '_', strtolower(get_class($context))));
+		return str_replace('\\', '_', str_replace('/', '_', strtolower(is_string($context) ? $context : get_class($context))));
 	}
 
 	public function generateTableStructure(): string {
