@@ -1,6 +1,9 @@
 <?php
 
 class DBStore {
+	//TODO make universal
+	private static string $modelPrefix = 'app_models_';
+
 	public function add(): int {
 		$qryStr = [];
 		$paramTypes = [];
@@ -98,7 +101,11 @@ class DBStore {
 	}
 
 	private static function S_getDbTableName($context): string {
-		return str_replace('\\', '_', str_replace('/', '_', strtolower(is_string($context) ? $context : get_class($context))));
+		$class = str_replace('\\', '_', str_replace('/', '_', strtolower(is_string($context) ? $context : get_class($context))));
+		if (strpos($class, self::$modelPrefix) === 0) {
+			$class = substr($class, strlen(self::$modelPrefix));
+		}
+		return $class;
 	}
 
 	public function generateTableStructure(): string {
