@@ -1,5 +1,8 @@
 <?php
 
+/**
+ * @property $id
+ */
 class DBStore {
 	//TODO make universal
 	private static string $modelPrefix = 'app_models_';
@@ -20,6 +23,9 @@ class DBStore {
 		);
 	}
 
+	/**
+	 * @throws Exception
+	 */
 	public function get(): void {
 		$query = SQL::select('SELECT * FROM ' . $this->getDbTableName() . ' WHERE id LIKE ?', 'i', $this->id);
 		if (is_null($query)) {
@@ -28,6 +34,9 @@ class DBStore {
 		$this->autocast($query);
 	}
 
+	/**
+	 * @throws Exception
+	 */
 	public static function getAll(): array {
 		$query = SQL::select_array('SELECT * FROM ' . self::S_getDbTableName(get_called_class()));
 		if (is_null($query)) {
@@ -41,7 +50,8 @@ class DBStore {
 		$paramTypes = [];
 		$params = [];
 		foreach ($this as $name => $value) {
-			if ($name === 'id') continue;
+			if ($name === 'id')
+				continue;
 			$qryStr[] = $name;
 			$paramTypes[] = self::varTypeToDbType(gettype($value));
 			$params[] = is_object($value) ? serialize($value) : $value;
@@ -59,17 +69,19 @@ class DBStore {
 
 	protected function autocast(array $query): void {
 		foreach ($query as $key => $value) {
-			$this->{$key} = is_serialized($value) ? unserialize($value) : $value;
+			if (is_int($key))
+				continue;
+			$this->{$key} = SQL::is_serialized($value) ? unserialize($value) : $value;
 		}
 	}
 
-	protected static function autocastArray(array $query) {
-		$result = array();
+	protected static function autocastArray(array $query): array {
+		$result = [];
 		$obj = static::class;
 		foreach ($query as $entry) {
 			$tmp = new $obj();
 			$tmp->autocast($entry);
-			array_push($result, $tmp);
+			$result[] = $tmp;
 		}
 		return $result;
 	}
@@ -102,7 +114,7 @@ class DBStore {
 
 	private static function S_getDbTableName($context): string {
 		$class = str_replace('\\', '_', str_replace('/', '_', strtolower(is_string($context) ? $context : get_class($context))));
-		if (strpos($class, self::$modelPrefix) === 0) {
+		if (str_starts_with($class, self::$modelPrefix)) {
 			$class = substr($class, strlen(self::$modelPrefix));
 		}
 		return $class;
@@ -114,7 +126,8 @@ class DBStore {
 		$columns = [];
 
 		foreach (get_class_vars($this->getTableName()) as $name => $value) {
-			if ($name === 'id') continue;
+			if ($name === 'id')
+				continue;
 
 			try {
 				$x->{$name} = 1;
@@ -144,6 +157,9 @@ class DBStore {
 		return 'CREATE TABLE IF NOT EXISTS `' . $this->getDbTableName() . '` (`id` INT NOT NULL AUTO_INCREMENT , ' . implode(', ', $columns) . ', PRIMARY KEY (`id`));';
 	}
 
+	/**
+	 * @throws ReflectionException
+	 */
 	public static function generateAllTableStructures(string $dir = __DIR__): void {
 		$classes = self::scanAllDir($dir);
 
@@ -182,10 +198,11 @@ class DBStore {
 		}
 	}
 
-	private static function scanAllDir($dir) {
+	private static function scanAllDir($dir): array {
 		$result = [];
 		foreach (scandir($dir) as $filename) {
-			if ($filename[0] === '.') continue;
+			if ($filename[0] === '.')
+				continue;
 			$filePath = $dir . '/' . $filename;
 			if (is_dir($filePath)) {
 				foreach (self::scanAllDir($filePath) as $childFilename) {
