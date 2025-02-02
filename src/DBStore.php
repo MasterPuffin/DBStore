@@ -6,6 +6,22 @@
 class DBStore {
 	//TODO make universal
 	private static string $modelPrefix = 'app_models_';
+	private static string $namespacePrefix = '\\App\\Models\\';
+
+	public function __construct(?int $id = null) {
+		if (!is_null($id)) {
+			$this->getById($id);
+		}
+	}
+
+	public function cast($query): void {
+		$this->autocast($query);
+	}
+
+	public function getById(int $id): void {
+		$this->id = $id;
+		$this->get();
+	}
 
 	public function add(): int {
 		$qryStr = [];
@@ -13,8 +29,25 @@ class DBStore {
 		$params = [];
 		foreach ($this as $name => $value) {
 			$qryStr[] = $name;
-			$paramTypes[] = self::varTypeToDbType(gettype($value));
-			$params[] = is_object($value) || is_array($value) ? serialize($value) : $value;
+			switch (self::_getType($value)) {
+				case 'class':
+					$params[] = $value->id;
+					$paramTypes[] = 'i';
+					break;
+				case 'enum':
+					$params[] = $value->value;
+					$paramTypes[] = 's';
+					break;
+				case 'object':
+				case 'array':
+					$params[] = serialize($value);
+					$paramTypes = 's';
+					break;
+				default:
+					$params[] = $value;
+					$paramTypes = self::_varTypeToDbType($value);
+					break;
+			}
 		}
 		return SQL::iud(
 			'INSERT INTO ' . $this->getDbTableName() . ' (' . implode(', ', $qryStr) . ') VALUES (' . implode(',', array_fill(0, count($params), '?')) . ')',
@@ -50,14 +83,27 @@ class DBStore {
 		$paramTypes = [];
 		$params = [];
 		foreach ($this as $name => $value) {
-			if ($name === 'id')
-				continue;
 			$qryStr[] = $name;
-			$paramTypes[] = self::varTypeToDbType(gettype($value));
-			$params[] = is_object($value) ? serialize($value) : $value;
+			switch (self::_getType($value)) {
+				case 'class':
+					$params[] = $value->id;
+					$paramTypes[] = 'i';
+					break;
+				case 'enum':
+					$params[] = $value->value;
+					$paramTypes[] = 's';
+					break;
+				case 'object':
+				case 'array':
+					$params[] = serialize($value);
+					$paramTypes = 's';
+					break;
+				default:
+					$params[] = $value;
+					$paramTypes = self::_varTypeToDbType($value);
+					break;
+			}
 		}
-		$params[] = $this->id;
-		$paramTypes[] = 'i';
 
 		SQL::iud('UPDATE ' . $this->getDbTableName() . ' SET ' . implode(' = ?, ', $qryStr) . ' = ? WHERE id LIKE ?',
 			implode('', $paramTypes), ...$params);
@@ -68,10 +114,25 @@ class DBStore {
 	}
 
 	protected function autocast(array $query): void {
-		foreach ($query as $key => $value) {
-			if (is_int($key))
-				continue;
-			$this->{$key} = SQL::is_serialized($value) ? unserialize($value) : $value;
+		$classname = get_class($this);
+
+		$reflectionClass = new ReflectionClass($classname);
+		$properties = $reflectionClass->getProperties();
+
+		foreach ($properties as $property) {
+			$type = $property->getType();
+			if (enum_exists($type)) {
+				$enumClass = $type->getName();
+				$this->{$property->getName()} = $enumClass::from($query[$property->getName()]);
+
+			} elseif (class_exists($type)) {
+				$propertyClassname = $type->getName();
+				$this->{$property->getName()} = new $propertyClassname($query[$property->getName()]);
+			} else {
+				$value = $query[$property->getName()];
+				$this->{$property->getName()} = SQL::is_serialized($value) ? unserialize($value) : $value;
+			}
+
 		}
 	}
 
@@ -86,13 +147,27 @@ class DBStore {
 		return $result;
 	}
 
-	private static function varTypeToDbType(string $vartype): string {
-		switch ($vartype) {
+
+	private static function _getType($value): string {
+		if (is_object($value)) {
+			$reflectionClass = new ReflectionClass($value);
+			if ($reflectionClass->isEnum()) {
+				return 'enum';
+			}
+			return 'class';
+		}
+		return gettype($value);
+	}
+
+	private static function _varTypeToDbType($value): string {
+		switch (self::_getType($value)) {
 			default:
+			case 'enum':
 			case 'string':
 			case 'object':
 				return 's';
 			case 'int':
+			case 'class':
 			case 'float':
 			case 'double':
 			case 'boolean':
@@ -120,27 +195,46 @@ class DBStore {
 		return $class;
 	}
 
+	private static function _getPropertiesOfClass($class): array {
+		$classname = get_class($class);
+
+		$reflectionClass = new ReflectionClass($classname);
+		$properties = $reflectionClass->getProperties();
+		$propertyTypes = [];
+
+		foreach ($properties as $property) {
+			$type = $property->getType();
+			if (enum_exists($type)) {
+				$finalType = 'enum';
+			} elseif (class_exists($type)) {
+				$finalType = 'class';
+			} else {
+				$finalType = $type ? $type->getName() : 'mixed';
+			}
+
+			$propertyTypes[$property->name] = $finalType;
+		}
+		return $propertyTypes;
+	}
+
 	public function generateTableStructure(): string {
-		$classname = get_class($this);
-		$x = new $classname();
+		$propertyTypes = self::_getPropertiesOfClass($this);
 		$columns = [];
 
-		foreach (get_class_vars($this->getTableName()) as $name => $value) {
+		foreach ($propertyTypes as $name => $value) {
 			if ($name === 'id')
 				continue;
 
-			try {
-				$x->{$name} = 1;
-			} catch (TypeError $e) {
-			}
-			switch (gettype($x->{$name})) {
+			switch ($value) {
 				default:
+				case 'enum':
 				case 'string':
 					$varType = 'VARCHAR(99)';
 					break;
 				case 'boolean':
 					$varType = 'INT(1)';
 					break;
+				case 'class':
 				case 'integer':
 					$varType = 'INT(9)';
 					break;
@@ -160,14 +254,18 @@ class DBStore {
 	/**
 	 * @throws ReflectionException
 	 */
-	public static function generateAllTableStructures(string $dir = __DIR__): void {
+	public static function generateAllTableStructures(string $dir = __DIR__): array {
 		$classes = self::scanAllDir($dir);
+		$statements = [];
 
 		foreach ($classes as $class) {
 			if (!str_ends_with($class, '.php')) {
 				continue;
 			}
 			$className = strtok(str_replace('/', '\\', $class), '.');
+			if (!str_starts_with($className, self::$namespacePrefix)) {
+				$className = self::$namespacePrefix . $className;
+			}
 
 			if (!is_subclass_of($className, self::class)) {
 				continue;
@@ -194,8 +292,9 @@ class DBStore {
 			}
 			$instance = new $className(...$paramsToFill);
 
-			echo $instance->generateTableStructure() . "<br>";
+			$statements[] = $instance->generateTableStructure();
 		}
+		return $statements;
 	}
 
 	private static function scanAllDir($dir): array {
