@@ -41,11 +41,11 @@ class DBStore {
 				case 'object':
 				case 'array':
 					$params[] = serialize($value);
-					$paramTypes = 's';
+					$paramTypes[] = 's';
 					break;
 				default:
 					$params[] = $value;
-					$paramTypes = self::_varTypeToDbType($value);
+					$paramTypes[] = self::_varTypeToDbType($value);
 					break;
 			}
 		}
@@ -96,11 +96,11 @@ class DBStore {
 				case 'object':
 				case 'array':
 					$params[] = serialize($value);
-					$paramTypes = 's';
+					$paramTypes[] = 's';
 					break;
 				default:
 					$params[] = $value;
-					$paramTypes = self::_varTypeToDbType($value);
+					$paramTypes[] = self::_varTypeToDbType($value);
 					break;
 			}
 		}
@@ -195,14 +195,16 @@ class DBStore {
 		return $class;
 	}
 
-	private static function _getPropertiesOfClass($class): array {
-		$classname = get_class($class);
+	public function generateTableStructure(): string {
+		$classname = get_class($this);
 
 		$reflectionClass = new ReflectionClass($classname);
 		$properties = $reflectionClass->getProperties();
-		$propertyTypes = [];
 
 		foreach ($properties as $property) {
+			if ($property->name === 'id')
+				continue;
+
 			$type = $property->getType();
 			if (enum_exists($type)) {
 				$finalType = 'enum';
@@ -212,20 +214,7 @@ class DBStore {
 				$finalType = $type ? $type->getName() : 'mixed';
 			}
 
-			$propertyTypes[$property->name] = $finalType;
-		}
-		return $propertyTypes;
-	}
-
-	public function generateTableStructure(): string {
-		$propertyTypes = self::_getPropertiesOfClass($this);
-		$columns = [];
-
-		foreach ($propertyTypes as $name => $value) {
-			if ($name === 'id')
-				continue;
-
-			switch ($value) {
+			switch ($finalType) {
 				default:
 				case 'enum':
 				case 'string':
@@ -246,8 +235,13 @@ class DBStore {
 					$varType = 'DOUBLE';
 					break;
 			}
-			$columns[] = '`' . $name . '` ' . $varType . ' NOT NULL';
+			$colStr = '`' . $property->name . '` ' . $varType;
+			if (!$type->allowsNull()) {
+				$colStr .= ' NOT NULL';
+			}
+			$columns[] = $colStr;
 		}
+
 		return 'CREATE TABLE IF NOT EXISTS `' . $this->getDbTableName() . '` (`id` INT NOT NULL AUTO_INCREMENT , ' . implode(', ', $columns) . ', PRIMARY KEY (`id`));';
 	}
 
