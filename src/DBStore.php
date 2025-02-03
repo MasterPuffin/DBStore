@@ -50,7 +50,7 @@ class DBStore {
 			}
 		}
 		return SQL::iud(
-			'INSERT INTO ' . $this->getDbTableName() . ' (' . implode(', ', $qryStr) . ') VALUES (' . implode(',', array_fill(0, count($params), '?')) . ')',
+			'INSERT INTO `' . $this->getDbTableName() . '` (' . implode(', ', array_map(fn($item) => "`$item`", $qryStr)) . ') VALUES (' . implode(',', array_fill(0, count($params), '?')) . ')',
 			implode('', $paramTypes),
 			...$params
 		);
@@ -83,6 +83,7 @@ class DBStore {
 		$paramTypes = [];
 		$params = [];
 		foreach ($this as $name => $value) {
+			if ($name === 'id') continue;
 			$qryStr[] = $name;
 			switch (self::_getType($value)) {
 				case 'class':
@@ -104,13 +105,15 @@ class DBStore {
 					break;
 			}
 		}
+		$paramTypes[] = 'i';
+		$params[] = $this->id;
 
-		SQL::iud('UPDATE ' . $this->getDbTableName() . ' SET ' . implode(' = ?, ', $qryStr) . ' = ? WHERE id LIKE ?',
+		SQL::iud('UPDATE `' . $this->getDbTableName() . '` SET ' . implode(', ', array_map(fn($col) => "`$col` = ?", $qryStr)) . ' WHERE id LIKE ?',
 			implode('', $paramTypes), ...$params);
 	}
 
 	public function delete(): void {
-		SQL::iud('DELETE FROM ' . $this->getDbTableName() . ' WHERE id = ?', 'i', $this->id);
+		SQL::iud('DELETE FROM `' . $this->getDbTableName() . '` WHERE id = ?', 'i', $this->id);
 	}
 
 	protected function autocast(array $query): void {
