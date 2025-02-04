@@ -223,11 +223,13 @@ class DBStore {
 				case 'string':
 					$varType = 'VARCHAR(99)';
 					break;
+				case 'bool':
 				case 'boolean':
 					$varType = 'INT(1)';
 					break;
 				case 'class':
 				case 'integer':
+				case 'int':
 					$varType = 'INT(9)';
 					break;
 				case 'array':
