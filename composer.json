@@ -1,7 +1,7 @@
 {
   "name": "masterpuffin/dbstore",
   "description": "DBStore",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "type": "library",
   "license": "MIT",
   "autoload": {

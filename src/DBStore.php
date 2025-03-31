@@ -50,7 +50,7 @@ class DBStore {
 			}
 		}
 		return SQL::iud(
-			'INSERT INTO `' . $this->getDbTableName() . '` (' . implode(', ', array_map(fn($item) => "`$item`", $qryStr)) . ') VALUES (' . implode(',', array_fill(0, count($params), '?')) . ')',
+			'INSERT INTO `' .$this->_getDbTableName() . '` (' . implode(', ', array_map(fn($item) => "`$item`", $qryStr)) . ') VALUES (' . implode(',', array_fill(0, count($params), '?')) . ')',
 			implode('', $paramTypes),
 			...$params
 		);
@@ -60,7 +60,7 @@ class DBStore {
 	 * @throws Exception
 	 */
 	public function get(): void {
-		$query = SQL::select('SELECT * FROM ' . $this->getDbTableName() . ' WHERE id LIKE ?', 'i', $this->id);
+		$query = SQL::select('SELECT * FROM ' . $this->_getDbTableName() . ' WHERE id LIKE ?', 'i', $this->id);
 		if (is_null($query)) {
 			throw new Exception(get_class($this) . " not found", 404);
 		}
@@ -108,12 +108,12 @@ class DBStore {
 		$paramTypes[] = 'i';
 		$params[] = $this->id;
 
-		SQL::iud('UPDATE `' . $this->getDbTableName() . '` SET ' . implode(', ', array_map(fn($col) => "`$col` = ?", $qryStr)) . ' WHERE id LIKE ?',
+		SQL::iud('UPDATE `' . $this->_getDbTableName() . '` SET ' . implode(', ', array_map(fn($col) => "`$col` = ?", $qryStr)) . ' WHERE id LIKE ?',
 			implode('', $paramTypes), ...$params);
 	}
 
 	public function delete(): void {
-		SQL::iud('DELETE FROM `' . $this->getDbTableName() . '` WHERE id = ?', 'i', $this->id);
+		SQL::iud('DELETE FROM `' . $this->_getDbTableName() . '` WHERE id = ?', 'i', $this->id);
 	}
 
 	protected function autocast(array $query): void {
@@ -178,19 +178,15 @@ class DBStore {
 		}
 	}
 
-	private function getTableName(): string {
-		return self::S_getTableName($this);
-	}
-
-	private static function S_getTableName($context): string {
-		return strtolower(get_class($context));
-	}
-
-	protected function getDbTableName(): string {
+	private function _getDbTableName(): string {
 		return self::S_getDbTableName($this);
 	}
 
-	protected static function S_getDbTableName($context): string {
+	protected static function getDbTableName(): string {
+		return self::S_getDbTableName(get_called_class());
+	}
+
+	private static function S_getDbTableName($context): string {
 		$class = str_replace('\\', '_', str_replace('/', '_', strtolower(is_string($context) ? $context : get_class($context))));
 		if (str_starts_with($class, self::$modelPrefix)) {
 			$class = substr($class, strlen(self::$modelPrefix));
@@ -248,7 +244,7 @@ class DBStore {
 			$columns[] = $colStr;
 		}
 
-		return 'CREATE TABLE IF NOT EXISTS `' . $this->getDbTableName() . '` (`id` INT NOT NULL AUTO_INCREMENT , ' . implode(', ', $columns) . ', PRIMARY KEY (`id`));';
+		return 'CREATE TABLE IF NOT EXISTS `' . $this->_getDbTableName() . '` (`id` INT NOT NULL AUTO_INCREMENT , ' . implode(', ', $columns) . ', PRIMARY KEY (`id`));';
 	}
 
 	/**
