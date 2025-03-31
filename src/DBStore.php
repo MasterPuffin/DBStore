@@ -237,6 +237,7 @@ class DBStore {
 					$varType = 'TEXT';
 					break;
 				case 'double':
+				case 'float':
 					$varType = 'DOUBLE';
 					break;
 			}
