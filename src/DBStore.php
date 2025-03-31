@@ -186,11 +186,11 @@ class DBStore {
 		return strtolower(get_class($context));
 	}
 
-	private function getDbTableName(): string {
+	protected function getDbTableName(): string {
 		return self::S_getDbTableName($this);
 	}
 
-	private static function S_getDbTableName($context): string {
+	protected static function S_getDbTableName($context): string {
 		$class = str_replace('\\', '_', str_replace('/', '_', strtolower(is_string($context) ? $context : get_class($context))));
 		if (str_starts_with($class, self::$modelPrefix)) {
 			$class = substr($class, strlen(self::$modelPrefix));
