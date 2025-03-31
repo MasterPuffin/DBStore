@@ -124,18 +124,19 @@ class DBStore {
 
 		foreach ($properties as $property) {
 			$type = $property->getType();
-			if (enum_exists($type)) {
-				$enumClass = $type->getName();
-				$this->{$property->getName()} = $enumClass::from($query[$property->getName()]);
-
-			} elseif (class_exists($type)) {
-				$propertyClassname = $type->getName();
-				$this->{$property->getName()} = new $propertyClassname($query[$property->getName()]);
+			$value = $query[$property->getName()];
+			if (class_exists($type->getName()) && !is_null($value)) {
+				if ((new \ReflectionClass($type->getName()))->isEnum()) {
+					$enumClass = $type->getName();
+					$this->{$property->getName()} = $enumClass::from($query[$property->getName()]);
+				} else {
+					$propertyClassname = $type->getName();
+					$this->{$property->getName()} = new $propertyClassname($query[$property->getName()]);
+				}
 			} else {
 				$value = $query[$property->getName()];
 				$this->{$property->getName()} = SQL::is_serialized($value) ? unserialize($value) : $value;
 			}
-
 		}
 	}
 
