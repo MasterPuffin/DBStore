@@ -69,11 +69,13 @@ class DBStore {
 			}
 		}
 
-		return SQL::iud(
+		$id = SQL::iud(
 			'INSERT INTO `' . $this->_getDbTableName() . '` (' . implode(', ', array_map(fn($item) => "`$item`", $qryStr)) . ') VALUES (' . implode(',', array_fill(0, count($params), '?')) . ')',
 			implode('', $paramTypes),
 			...$params
 		);
+		$this->id = $id;
+		return $this->id;
 	}
 
 
