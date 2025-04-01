@@ -5,9 +5,9 @@
   "type": "library",
   "license": "MIT",
   "autoload": {
-    "classmap": [
-      "src/DBStore.php"
-    ]
+    "psr-4": {
+      "MasterPuffin\\DBStore\\": "src/"
+    }
   },
   "authors": [
     {
