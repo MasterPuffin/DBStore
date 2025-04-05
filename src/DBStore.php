@@ -14,8 +14,10 @@ class DBStore {
 	//TODO make universal
 	private static string $modelPrefix = 'app_models_';
 	private static string $namespacePrefix = '\\App\\Models\\';
+	private static string $publicIdName = 'nanoId';
+	private static string $publicIdGenerateFunction = 'generateNanoId';
 
-	public function __construct(?int $id = null) {
+	public function __construct(string|int|null $id = null) {
 		if (!is_null($id)) {
 			$this->getById($id);
 		}
@@ -25,8 +27,12 @@ class DBStore {
 		$this->autocast($query);
 	}
 
-	public function getById(int $id): void {
-		$this->id = $id;
+	public function getById(string|int $id): void {
+		if (is_string($id)) {
+			$this->{self::$publicIdName} = $id;
+		} else {
+			$this->id = $id;
+		}
 		$this->get();
 	}
 
@@ -35,6 +41,10 @@ class DBStore {
 		$paramTypes = [];
 		$params = [];
 		$reflectionClass = new ReflectionClass($this);
+
+		if (!empty(self::$publicIdGenerateFunction) && !isset($this->{self::$publicIdName})) {
+			$this->{self::$publicIdName} = call_user_func(self::$publicIdGenerateFunction);
+		}
 
 		foreach ($this as $name => $value) {
 			$property = $reflectionClass->getProperty($name);
@@ -83,7 +93,13 @@ class DBStore {
 	 * @throws Exception
 	 */
 	public function get(): void {
-		$query = SQL::select('SELECT * FROM ' . $this->_getDbTableName() . ' WHERE id LIKE ?', 'i', $this->id);
+		if (isset($this->id)) {
+			$query = SQL::select('SELECT * FROM ' . $this->_getDbTableName() . ' WHERE id LIKE ?', 'i', $this->id);
+		} elseif (isset($this->{self::$publicIdName})) {
+			$query = SQL::select('SELECT * FROM ' . $this->_getDbTableName() . ' WHERE ' . self::$publicIdName . ' = ?', 's', $this->$this->publicIdName);
+		} else {
+			throw new Exception("No ID set", 404);
+		}
 		if (is_null($query)) {
 			throw new Exception(get_class($this) . " not found", 404);
 		}
