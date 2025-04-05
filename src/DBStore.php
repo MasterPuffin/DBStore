@@ -257,17 +257,50 @@ class DBStore {
 		$reflectionClass = new ReflectionClass($classname);
 		$properties = $reflectionClass->getProperties();
 		$columns = [];
+		$constraints = [];
 
 		foreach ($properties as $property) {
-			if ($property->name === 'id')
+			if ($property->name === 'id') {
 				continue;
+			}
 
 			$type = $property->getType();
-			$attributes = $property->getAttributes(ForeignKey::class);
+			$foreignKeyAttributes = $property->getAttributes(ForeignKey::class);
 
-			// Check if property has ForeignKey attribute
-			if (!empty($attributes)) {
+			// Handle column definition
+			if (!empty($foreignKeyAttributes)) {
+				$foreignKey = $foreignKeyAttributes[0]->newInstance();
 				$colStr = '`' . $property->name . '_id` INT(9)';
+
+				$onDelete = null;
+				$onUpdate = null;
+				if ($foreignKey->onDelete !== Constraint::None) {
+					$onDelete = 'ON DELETE ' . match ($foreignKey->onDelete) {
+							Constraint::Cascade => 'CASCADE',
+							Constraint::SetNull => 'SET NULL',
+							Constraint::NoAction => 'NO ACTION',
+							Constraint::Restrict => 'RESTRICT',
+						};
+				}
+				if ($foreignKey->onUpdate !== Constraint::None) {
+					$onUpdate = 'ON UPDATE ' . match ($foreignKey->onUpdate) {
+							Constraint::Cascade => 'CASCADE',
+							Constraint::SetNull => 'SET NULL',
+							Constraint::NoAction => 'NO ACTION',
+							Constraint::Restrict => 'RESTRICT',
+						};
+				}
+				if (!is_null($onUpdate) || !is_null($onDelete)) {
+					$constraints[] = sprintf(
+						'CONSTRAINT `fk_%s_%s` FOREIGN KEY (`%s_id`) REFERENCES `%s`(`id`) %s %s',
+						$this->_getDbTableName(),
+						$property->name,
+						$property->name,
+						!is_null($foreignKey->constraintTableName) ? $foreignKey->constraintTableName : self::S_getDbTableName($foreignKey->className),
+						$onDelete,
+						$onUpdate
+					);
+				}
 			} else {
 				// Original type handling
 				if (enum_exists($type)) {
@@ -305,14 +338,24 @@ class DBStore {
 				$colStr = '`' . $property->name . '` ' . $varType;
 			}
 
+			// Handle nullability
 			if ($type && !$type->allowsNull()) {
 				$colStr .= ' NOT NULL';
 			}
+
 			$columns[] = $colStr;
 		}
 
-		return 'CREATE TABLE IF NOT EXISTS `' . $this->_getDbTableName() . '` (`id` INT NOT NULL AUTO_INCREMENT , ' . implode(', ', $columns) . ', PRIMARY KEY (`id`));';
+		// Combine columns and constraints
+		$tableElements = array_merge($columns, $constraints);
+
+		return sprintf(
+			'CREATE TABLE IF NOT EXISTS `%s` (`id` INT NOT NULL AUTO_INCREMENT, %s, PRIMARY KEY (`id`));',
+			$this->_getDbTableName(),
+			implode(', ', $tableElements)
+		);
 	}
+
 
 	/**
 	 * @throws ReflectionException
