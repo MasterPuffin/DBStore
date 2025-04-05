@@ -42,7 +42,7 @@ class DBStore {
 		$params = [];
 		$reflectionClass = new ReflectionClass($this);
 
-		if (!empty(self::$publicIdGenerateFunction) && !isset($this->{self::$publicIdName})) {
+		if (!empty(self::$publicIdGenerateFunction) && $reflectionClass->hasProperty(self::$publicIdName) && !isset($this->{self::$publicIdName})) {
 			$this->{self::$publicIdName} = call_user_func(self::$publicIdGenerateFunction);
 		}
 
@@ -96,7 +96,7 @@ class DBStore {
 		if (isset($this->id)) {
 			$query = SQL::select('SELECT * FROM ' . $this->_getDbTableName() . ' WHERE id LIKE ?', 'i', $this->id);
 		} elseif (isset($this->{self::$publicIdName})) {
-			$query = SQL::select('SELECT * FROM ' . $this->_getDbTableName() . ' WHERE ' . self::$publicIdName . ' = ?', 's', $this->$this->publicIdName);
+			$query = SQL::select('SELECT * FROM ' . $this->_getDbTableName() . ' WHERE ' . self::$publicIdName . ' = ?', 's', $this->{self::$publicIdName});
 		} else {
 			throw new Exception("No ID set", 404);
 		}
