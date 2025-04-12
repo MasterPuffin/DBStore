@@ -331,11 +331,11 @@ class DBStore {
 					default:
 					case 'enum':
 					case 'string':
-						$varType = 'VARCHAR(99)';
+						$varType = 'VARCHAR(255)';
 						break;
 					case 'bool':
 					case 'boolean':
-						$varType = 'INT(1)';
+						$varType = 'TINYINT(1)';
 						break;
 					case 'class':
 					case 'integer':
