@@ -258,10 +258,22 @@ class DBStore {
 	}
 
 	private static function S_getDbTableName($context): string {
+		$reflection = new ReflectionClass(is_string($context) ? $context : get_class($context));
+		$attributes = $reflection->getAttributes(TableName::class);
+		if (!empty($attributes)) {
+			//Check if another class sets the table name
+			if (class_exists($attributes[0]->getArguments()[0])) {
+				return self::S_getDbTableName($attributes[0]->getArguments()[0]);
+			} else {
+				return $attributes[0]->getArguments()[0];
+			}
+		}
+
 		$class = str_replace(array('/', '\\'), '_', strtolower(is_string($context) ? $context : get_class($context)));
 		if (str_starts_with($class, self::$modelPrefix)) {
 			$class = substr($class, strlen(self::$modelPrefix));
 		}
+
 		return $class;
 	}
 
@@ -416,7 +428,7 @@ class DBStore {
 
 			$statements[] = $instance->generateTableStructure();
 		}
-		return $statements;
+		return array_unique($statements);
 	}
 
 	private static function scanAllDir($dir): array {
