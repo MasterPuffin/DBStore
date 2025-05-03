@@ -330,38 +330,48 @@ class DBStore {
 					);
 				}
 			} else {
-				// Original type handling
-				if (enum_exists($type)) {
-					$finalType = 'enum';
-				} elseif (class_exists($type)) {
-					$finalType = 'class';
+				$varTypeAttribute = $property->getAttributes(Type::class);
+				if (!empty($varTypeAttribute)) {
+					//Check if has length
+					if (is_null($varTypeAttribute[0]->getArguments()[1])) {
+						$varType = $varTypeAttribute[0]->getArguments()[0]->value;
+					} else {
+						$varType = sprintf('%s(%d)', $varTypeAttribute[0]->getArguments()[0]->value, $varTypeAttribute[0]->getArguments()[1]);
+					}
 				} else {
-					$finalType = $type ? $type->getName() : 'mixed';
-				}
+					// Original type handling
+					if (enum_exists($type)) {
+						$finalType = 'enum';
+					} elseif (class_exists($type)) {
+						$finalType = 'class';
+					} else {
+						$finalType = $type ? $type->getName() : 'mixed';
+					}
 
-				switch ($finalType) {
-					default:
-					case 'enum':
-					case 'string':
-						$varType = 'VARCHAR(255)';
-						break;
-					case 'bool':
-					case 'boolean':
-						$varType = 'TINYINT(1)';
-						break;
-					case 'class':
-					case 'integer':
-					case 'int':
-						$varType = 'INT(9)';
-						break;
-					case 'array':
-					case 'object':
-						$varType = 'TEXT';
-						break;
-					case 'double':
-					case 'float':
-						$varType = 'DOUBLE';
-						break;
+					switch ($finalType) {
+						default:
+						case 'enum':
+						case 'string':
+							$varType = 'VARCHAR(255)';
+							break;
+						case 'bool':
+						case 'boolean':
+							$varType = 'TINYINT(1)';
+							break;
+						case 'class':
+						case 'integer':
+						case 'int':
+							$varType = 'INT(9)';
+							break;
+						case 'array':
+						case 'object':
+							$varType = 'TEXT';
+							break;
+						case 'double':
+						case 'float':
+							$varType = 'DOUBLE';
+							break;
+					}
 				}
 				$colStr = '`' . $property->name . '` ' . $varType;
 			}
