@@ -333,7 +333,7 @@ class DBStore {
 				$varTypeAttribute = $property->getAttributes(Type::class);
 				if (!empty($varTypeAttribute)) {
 					//Check if has length
-					if (is_null($varTypeAttribute[0]->getArguments()[1])) {
+					if (!isset($varTypeAttribute[0]->getArguments()[1]) || is_null($varTypeAttribute[0]->getArguments()[1])) {
 						$varType = $varTypeAttribute[0]->getArguments()[0]->value;
 					} else {
 						$varType = sprintf('%s(%d)', $varTypeAttribute[0]->getArguments()[0]->value, $varTypeAttribute[0]->getArguments()[1]);
