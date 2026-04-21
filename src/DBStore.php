@@ -194,7 +194,7 @@ class DBStore {
 				}
 			} else {
 				$value = $query[$propertyName];
-				if (class_exists($type->getName()) && !is_null($value)) {
+				if (class_exists($propertyName) && !is_null($value)) {
 					if ((new ReflectionClass($type->getName()))->isEnum()) {
 						$enumClass = $type->getName();
 						$this->$propertyName = $enumClass::from($value);
