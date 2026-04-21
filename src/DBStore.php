@@ -28,7 +28,7 @@ class DBStore {
 	}
 
 	public function getById(string|int $id): void {
-		if (is_string($id)) {
+		if (is_string($id) && property_exists($this, self::$publicIdName)) {
 			$this->{self::$publicIdName} = $id;
 		} else {
 			$this->id = $id;
@@ -95,11 +95,12 @@ class DBStore {
 	public function get(): void {
 		if (isset($this->id)) {
 			$query = SQL::select('SELECT * FROM ' . $this->_getDbTableName() . ' WHERE id LIKE ?', 'i', $this->id);
-		} elseif (isset($this->{self::$publicIdName})) {
+		} elseif (property_exists($this, self::$publicIdName) && isset($this->{self::$publicIdName})) {
 			$query = SQL::select('SELECT * FROM ' . $this->_getDbTableName() . ' WHERE ' . self::$publicIdName . ' = ?', 's', $this->{self::$publicIdName});
 		} else {
 			throw new Exception("No ID set", 404);
 		}
+
 		if (is_null($query)) {
 			throw new Exception(get_class($this) . " not found", 404);
 		}
