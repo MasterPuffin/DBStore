@@ -186,7 +186,7 @@ class DBStore {
 
 			if (!empty($attributes)) {
 				// Handle foreign key
-				$foreignKeyId = $query[$propertyName . '_id'];
+				$foreignKeyId = $query[$propertyName . '_id'] ?? null;
 				if (!is_null($foreignKeyId)) {
 					$foreignClass = $attributes[0]->getArguments()[0];
 					$this->$propertyName = new $foreignClass($foreignKeyId);
@@ -194,16 +194,29 @@ class DBStore {
 					$this->$propertyName = null;
 				}
 			} else {
-				$value = $query[$propertyName];
-				if (class_exists($propertyName) && !is_null($value)) {
-					if ((new ReflectionClass($type->getName()))->isEnum()) {
-						$enumClass = $type->getName();
-						$this->$propertyName = $enumClass::from($value);
+				$value = $query[$propertyName] ?? null;
+
+				// Extract the class name safely, handling both single and union types (e.g., ?MyClass)
+				$propertyClassname = null;
+				if ($type !== null) {
+					$types = $type instanceof \ReflectionUnionType ? $type->getTypes() : [$type];
+					foreach ($types as $t) {
+						if ($t instanceof \ReflectionNamedType && !$t->isBuiltin()) {
+							$propertyClassname = $t->getName();
+							break;
+						}
+					}
+				}
+
+				// Instantiate the class or enum if it exists
+				if ($propertyClassname !== null && (class_exists($propertyClassname) || enum_exists($propertyClassname)) && !is_null($value)) {
+					if ((new ReflectionClass($propertyClassname))->isEnum()) {
+						$this->$propertyName = $propertyClassname::from($value);
 					} else {
-						$propertyClassname = $type->getName();
 						$this->$propertyName = new $propertyClassname($value);
 					}
 				} else {
+					// Fallback to primitive value or deserialization
 					$this->$propertyName = SQL::is_serialized($value) ? unserialize($value) : $value;
 				}
 			}
