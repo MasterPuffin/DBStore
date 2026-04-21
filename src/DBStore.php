@@ -51,9 +51,16 @@ class DBStore {
 			$attributes = $property->getAttributes(ForeignKey::class);
 
 			if (!empty($attributes)) {
-				// Handle foreign key
-				$qryStr[] = $name . '_id';
-				$params[] = $value?->id;
+				// Handle foreign key: Detect if name already ends with Id or _id
+				$columnName = preg_match('/(_id|Id)$/', $name) ? $name : $name . '_id';
+				$qryStr[] = $columnName;
+
+				// Detect if simple type or class instance
+				if (is_object($value)) {
+					$params[] = $value->id ?? null;
+				} else {
+					$params[] = $value;
+				}
 				$paramTypes[] = 'i';
 			} else {
 				$qryStr[] = $name;
@@ -132,8 +139,14 @@ class DBStore {
 
 			if (!empty($attributes)) {
 				// Handle foreign key
-				$qryStr[] = $name . '_id';
-				$params[] = $value?->id;
+				$columnName = preg_match('/(_id|Id)$/', $name) ? $name : $name . '_id';
+				$qryStr[] = $columnName;
+
+				if (is_object($value)) {
+					$params[] = $value->id ?? null;
+				} else {
+					$params[] = $value;
+				}
 				$paramTypes[] = 'i';
 			} else {
 				$qryStr[] = $name;
@@ -185,11 +198,29 @@ class DBStore {
 			$propertyName = $property->getName();
 
 			if (!empty($attributes)) {
-				// Handle foreign key
-				$foreignKeyId = $query[$propertyName . '_id'] ?? null;
+				// Handle foreign key column resolution
+				$columnName = preg_match('/(_id|Id)$/', $propertyName) ? $propertyName : $propertyName . '_id';
+				$foreignKeyId = $query[$columnName] ?? null;
+
 				if (!is_null($foreignKeyId)) {
-					$foreignClass = $attributes[0]->getArguments()[0];
-					$this->$propertyName = new $foreignClass($foreignKeyId);
+					// Check if the property expects a class instance or a built-in type (like int)
+					$isBuiltin = true;
+					if ($type !== null) {
+						$types = $type instanceof \ReflectionUnionType ? $type->getTypes() : [$type];
+						foreach ($types as $t) {
+							if ($t instanceof \ReflectionNamedType && !$t->isBuiltin()) {
+								$isBuiltin = false;
+								break;
+							}
+						}
+					}
+
+					if (!$isBuiltin) {
+						$foreignClass = $attributes[0]->getArguments()[0];
+						$this->$propertyName = new $foreignClass($foreignKeyId);
+					} else {
+						$this->$propertyName = $foreignKeyId;
+					}
 				} else {
 					$this->$propertyName = null;
 				}
@@ -312,7 +343,10 @@ class DBStore {
 			// Handle column definition
 			if (!empty($foreignKeyAttributes)) {
 				$foreignKey = $foreignKeyAttributes[0]->newInstance();
-				$colStr = '`' . $property->name . '_id` INT(9)';
+
+				// Detect column name mapping dynamically
+				$columnName = preg_match('/(_id|Id)$/', $property->name) ? $property->name : $property->name . '_id';
+				$colStr = '`' . $columnName . '` INT(9)';
 
 				$onDelete = null;
 				$onUpdate = null;
@@ -334,10 +368,10 @@ class DBStore {
 				}
 				if (!is_null($onUpdate) || !is_null($onDelete)) {
 					$constraints[] = sprintf(
-						'CONSTRAINT `fk_%s_%s` FOREIGN KEY (`%s_id`) REFERENCES `%s`(`id`) %s %s',
+						'CONSTRAINT `fk_%s_%s` FOREIGN KEY (`%s`) REFERENCES `%s`(`id`) %s %s',
 						$this->_getDbTableName(),
-						$property->name,
-						$property->name,
+						$columnName, // Using resolved column name for FK label
+						$columnName,
 						!is_null($foreignKey->constraintTableName) ? $foreignKey->constraintTableName : self::S_getDbTableName($foreignKey->className),
 						$onDelete,
 						$onUpdate
@@ -407,7 +441,6 @@ class DBStore {
 			implode(', ', $tableElements)
 		);
 	}
-
 
 	/**
 	 * @throws ReflectionException
