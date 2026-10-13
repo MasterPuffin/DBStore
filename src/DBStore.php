@@ -3,6 +3,7 @@
 namespace MasterPuffin\DBStore;
 
 use Exception;
+use InvalidArgumentException;
 use ReflectionClass;
 use ReflectionException;
 use SQL;
@@ -123,6 +124,192 @@ class DBStore {
 			throw new Exception(get_called_class() . " not found", 404);
 		}
 		return self::autocastArray($query);
+	}
+
+	// ---------------------------------------------------------------------
+	// Filtered, sorted and paged lists.
+	//
+	// This section lets the database do the filtering, sorting and paging, so that a list view does not have
+	// to load a whole table into PHP (getAll()) and cut it down afterwards. It is used by the Datatable
+	// component for AJAX tables, but is a general API of every model:
+	//
+	//     $where = Condition::all(Condition::where('active', '=', true),
+	//                             Condition::where('name', 'contains', 'adm'));
+	//     $total = Group::countWhere($where);
+	//     $page  = Group::findPaged($where, [['name', 'asc']], 25, 50);   // rows 51 to 75
+	//
+	// Filters are Condition objects and sort columns are property names: no SQL text is accepted at all,
+	// property names must be real model properties, and all values (even LIMIT/OFFSET) are bound as
+	// parameters. That is what makes it safe to feed these methods with data derived from user input.
+	//
+	// All methods are static and operate on the model they are called on (Group::findPaged() queries the
+	// groups table). The helpers below are private; `self::` calls keep the called class (late static
+	// binding), which is why they can use `static::class` to find out which model is meant.
+	// ---------------------------------------------------------------------
+
+	/**
+	 * Upper limit for findPaged(), whatever the caller asks for. A last line of defence against code that
+	 * passes an unchecked page size; the Datatable component caps the size much lower itself.
+	 *
+	 * @var int
+	 */
+	private const MAX_PAGE_SIZE = 1000;
+
+	/**
+	 * Counts the rows of this model's table that match a condition, using `SELECT COUNT(*)`, so no rows are
+	 * transferred.
+	 *
+	 * @param Condition|null $where The filter. Null counts all rows.
+	 *
+	 * @return int The number of matching rows.
+	 *
+	 * @throws InvalidArgumentException The condition names a property that is not a property of this model.
+	 */
+	public static function countWhere(?Condition $where = null): int {
+		[$whereSql, $params] = self::compileWhere($where);
+		$row = self::run(false, 'SELECT COUNT(*) AS cnt FROM ' . self::quotedTable() . $whereSql, $params);
+		return is_array($row) ? (int)($row['cnt'] ?? 0) : 0;
+	}
+
+	/**
+	 * Loads one page of rows: filtered, sorted and cut to a window, all in one SQL query
+	 * (`SELECT * ... WHERE ... ORDER BY ... LIMIT ? OFFSET ?`).
+	 *
+	 * Sorting by a column whose values are not unique does not give a stable order across pages by itself. Add
+	 * a unique column such as `['id', 'asc']` as the last sort criterion, otherwise rows can repeat or go
+	 * missing when paging. The Datatable component does this.
+	 *
+	 * @param Condition|null                          $where   The filter. Null = no filter.
+	 * @param array<int, array{0: string, 1: string}> $orderBy Sort criteria, most important first, each as
+	 *                                                         `[property, 'asc'|'desc']`. The property is a model
+	 *                                                         property name (not a column name). Empty = database
+	 *                                                         default order, which is not guaranteed to be stable.
+	 * @param int                                     $limit   Rows per page, 1 to {@see DBStore::MAX_PAGE_SIZE}.
+	 * @param int                                     $offset  Number of rows to skip, 0 or more.
+	 *
+	 * @return static[] The model objects of the page (empty array if there are none), created like those of
+	 *                  getAll(), so values have their PHP types.
+	 *
+	 * @throws InvalidArgumentException `$limit` or `$offset` out of range, a sort direction other than
+	 *                                  asc/desc, or a property that does not exist on this model.
+	 */
+	public static function findPaged(?Condition $where, array $orderBy, int $limit, int $offset = 0): array {
+		if ($limit < 1 || $limit > self::MAX_PAGE_SIZE || $offset < 0) {
+			throw new InvalidArgumentException('Invalid limit or offset');
+		}
+		[$whereSql, $params] = self::compileWhere($where);
+
+		$order = [];
+		foreach ($orderBy as [$property, $direction]) {
+			$order[] = self::column($property) . match ($direction) {
+					'asc' => ' ASC',
+					'desc' => ' DESC',
+					default => throw new InvalidArgumentException('Invalid sort direction'),
+				};
+		}
+
+		$sql = 'SELECT * FROM ' . self::quotedTable() . $whereSql
+			. ($order ? ' ORDER BY ' . implode(', ', $order) : '')
+			. ' LIMIT ? OFFSET ?';
+		$rows = self::run(true, $sql, [...$params, $limit, $offset]);
+		return empty($rows) ? [] : self::autocastArray($rows);
+	}
+
+	/**
+	 * Compiles an optional condition into a WHERE clause for this model.
+	 *
+	 * @param Condition|null $where The filter, or null for none.
+	 *
+	 * @return array{0: string, 1: array} The SQL fragment including the leading ` WHERE ` (empty string without a
+	 *                                    condition), and the values to bind in placeholder order.
+	 */
+	private static function compileWhere(?Condition $where): array {
+		if ($where === null) {
+			return ['', []];
+		}
+		[$sql, $params] = $where->compile(self::column(...));
+		return [' WHERE ' . $sql, $params];
+	}
+
+	/**
+	 * Turns a property name into a safely quoted column name. This is the single gate through which every
+	 * name that is used in a query passes, which makes it the core of the injection protection of this section.
+	 *
+	 * The name is accepted only if it is `id` or a real, non-static property of the model that was called
+	 * (found by reflection; `self::` calls forward the called class, so `static::class` is that model).
+	 * Anything else, including every string that merely looks like SQL, is rejected with an exception.
+	 *
+	 * Properties with the {@see ForeignKey} attribute are stored in a column named `<property>_id`, the same
+	 * rule that add() and edit() apply, unless the name already ends in `_id` or `Id`.
+	 *
+	 * @param string $property Name of a model property.
+	 *
+	 * @return string The column name in backticks, e.g. `` `name` ``.
+	 *
+	 * @throws InvalidArgumentException The property does not exist on the model, or is static.
+	 */
+	private static function column(string $property): string {
+		if ($property !== 'id') {
+			$model = new ReflectionClass(static::class);
+			if (!$model->hasProperty($property) || $model->getProperty($property)->isStatic()) {
+				throw new InvalidArgumentException('Unknown property ' . static::class . '::$' . $property);
+			}
+			// foreign keys are stored as <name>_id, same rule as add() and edit()
+			if ($model->getProperty($property)->getAttributes(ForeignKey::class) && !preg_match('/(_id|Id)$/', $property)) {
+				$property .= '_id';
+			}
+		}
+		return self::quote($property);
+	}
+
+	/**
+	 * The quoted table name of the model that was called. It comes from the model's TableName attribute or
+	 * class name (see S_getDbTableName()), i.e. from the code, never from a request.
+	 *
+	 * @return string The table name in backticks.
+	 */
+	private static function quotedTable(): string {
+		return self::quote(self::S_getDbTableName(static::class));
+	}
+
+	/**
+	 * Quotes an identifier (table or column name) with backticks and doubles any backtick inside it, so the
+	 * name cannot end the quoting early. Defence in depth: names are already whitelisted before they get here.
+	 *
+	 * @param string $identifier The name to quote.
+	 *
+	 * @return string The quoted name.
+	 */
+	private static function quote(string $identifier): string {
+		return '`' . str_replace('`', '``', $identifier) . '`';
+	}
+
+	/**
+	 * Runs a prepared statement through the application's SQL class, with the values bound as parameters.
+	 *
+	 * The bind type string (one letter per value) is derived from the PHP types: int = `i`, float = `d`,
+	 * everything else = `s`. Without values the statement is run without binding.
+	 *
+	 * Assumes the signature `SQL::select($sql, $types, ...$params)` (one row) and `SQL::select_array(...)` (all
+	 * rows) of the application's SQL class; adjust here if it differs.
+	 *
+	 * @param bool   $allRows true = fetch all rows (`select_array`); false = fetch one row (`select`).
+	 * @param string $sql     The statement, with `?` placeholders.
+	 * @param array  $params  The values for the placeholders, in order.
+	 *
+	 * @return mixed What the SQL class returns: a list of rows or a single row, empty/null if there is none.
+	 */
+	private static function run(bool $allRows, string $sql, array $params): mixed {
+		$types = implode('', array_map(fn($p) => match (true) {
+			is_int($p) => 'i',
+			is_float($p) => 'd',
+			default => 's',
+		}, $params));
+
+		if ($allRows) {
+			return $params ? SQL::select_array($sql, $types, ...$params) : SQL::select_array($sql);
+		}
+		return $params ? SQL::select($sql, $types, ...$params) : SQL::select($sql);
 	}
 
 	public function edit(): void {
