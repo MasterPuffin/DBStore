@@ -94,11 +94,11 @@ final class Condition {
 	 * One class represents two kinds of node: a group (glue `AND` or `OR`, with children) and a leaf
 	 * (glue empty, with property, operator and values).
 	 *
-	 * @param 'AND'|'OR'|'' $glue     `''` = a single comparison (leaf); otherwise the children are joined with it.
-	 * @param Condition[]   $children Sub-conditions of a group.
-	 * @param string        $property Model property name of a leaf.
-	 * @param string        $operator Operator of a leaf, one of {@see Condition::OPERATORS}.
-	 * @param array         $values   Values of a leaf, already checked against the operator's value count.
+	 * @param 'AND'|'OR'|'' $glue `''` = a single comparison (leaf); otherwise the children are joined with it.
+	 * @param Condition[] $children Sub-conditions of a group.
+	 * @param string $property Model property name of a leaf.
+	 * @param string $operator Operator of a leaf, one of {@see Condition::OPERATORS}.
+	 * @param array $values Values of a leaf, already checked against the operator's value count.
 	 */
 	private function __construct(
 		private readonly string $glue,
@@ -138,9 +138,9 @@ final class Condition {
 	 * Booleans are converted to 1 and 0, because that is how they are stored. The property name is not checked
 	 * here but when the condition is compiled, since only the model knows its properties.
 	 *
-	 * @param string                  $property Name of a model PROPERTY (not a database column name).
-	 * @param string                  $operator One of the operators in the class documentation.
-	 * @param int|float|string|bool   ...$values As many values as the operator takes: 0 for `null`/`!null`,
+	 * @param string $property Name of a model PROPERTY (not a database column name).
+	 * @param string $operator One of the operators in the class documentation.
+	 * @param int|float|string|bool ...$values As many values as the operator takes: 0 for `null`/`!null`,
 	 *                                           2 for `between`/`!between`, otherwise 1.
 	 *
 	 * @return self
@@ -175,7 +175,7 @@ final class Condition {
 	 *
 	 * @param Closure(string): string $column Turns a property name into a quoted column name. DBStore passes a
 	 *                                        callback that throws for anything that is not a model property.
-	 * @param int                     $depth  Current nesting depth. Callers leave it at 0; it is used by the
+	 * @param int $depth Current nesting depth. Callers leave it at 0; it is used by the
 	 *                                        recursion.
 	 *
 	 * @return array{0: string, 1: array} The SQL fragment and the values to bind, in placeholder order.

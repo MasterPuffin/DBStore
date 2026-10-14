@@ -18,6 +18,15 @@ class DBStore {
 	private static string $publicIdName = 'nanoId';
 	private static string $publicIdGenerateFunction = 'generateNanoId';
 
+	/**
+	 * false (default): add() and edit() write through SQL::iud(), which strips tags and HTML-encodes string
+	 * values. true: strings are written exactly as they are (SQL::iud_escaped()), for models whose values are
+	 * not output as HTML as stored, or that must keep their exact bytes (e.g. postal addresses).
+	 *
+	 * @var bool
+	 */
+	protected static bool $storeRawStrings = false;
+
 	public function __construct(string|int|null $id = null) {
 		if (!is_null($id)) {
 			$this->getById($id);
@@ -38,61 +47,17 @@ class DBStore {
 	}
 
 	public function add(): int {
-		$qryStr = [];
-		$paramTypes = [];
-		$params = [];
 		$reflectionClass = new ReflectionClass($this);
-
 		if (!empty(self::$publicIdGenerateFunction) && $reflectionClass->hasProperty(self::$publicIdName) && !isset($this->{self::$publicIdName})) {
 			$this->{self::$publicIdName} = call_user_func(self::$publicIdGenerateFunction);
 		}
 
-		foreach ($this as $name => $value) {
-			$property = $reflectionClass->getProperty($name);
-			$attributes = $property->getAttributes(ForeignKey::class);
-
-			if (!empty($attributes)) {
-				// Handle foreign key: Detect if name already ends with Id or _id
-				$columnName = preg_match('/(_id|Id)$/', $name) ? $name : $name . '_id';
-				$qryStr[] = $columnName;
-
-				// Detect if simple type or class instance
-				if (is_object($value)) {
-					$params[] = $value->id ?? null;
-				} else {
-					$params[] = $value;
-				}
-				$paramTypes[] = 'i';
-			} else {
-				$qryStr[] = $name;
-				switch (self::_getType($value)) {
-					case 'class':
-						$params[] = $value->id;
-						$paramTypes[] = 'i';
-						break;
-					case 'enum':
-						$params[] = $value->value;
-						$paramTypes[] = 's';
-						break;
-					case 'object':
-					case 'array':
-						$params[] = serialize($value);
-						$paramTypes[] = 's';
-						break;
-					default:
-						$params[] = $value;
-						$paramTypes[] = self::_varTypeToDbType($value);
-						break;
-				}
-			}
-		}
-
-		$id = SQL::iud(
-			'INSERT INTO `' . $this->_getDbTableName() . '` (' . implode(', ', array_map(fn($item) => "`$item`", $qryStr)) . ') VALUES (' . implode(',', array_fill(0, count($params), '?')) . ')',
-			implode('', $paramTypes),
+		[$columns, $types, $params] = $this->toColumns($this->persistedValues());
+		$this->id = self::write(
+			'INSERT INTO `' . $this->_getDbTableName() . '` (' . implode(', ', array_map(fn($column) => "`$column`", $columns)) . ') VALUES (' . implode(',', array_fill(0, count($params), '?')) . ')',
+			$types,
 			...$params
 		);
-		$this->id = $id;
 		return $this->id;
 	}
 
@@ -246,12 +211,12 @@ class DBStore {
 	 *
 	 * @return string The column name in backticks, e.g. `` `name` ``.
 	 *
-	 * @throws InvalidArgumentException The property does not exist on the model, or is static.
+	 * @throws InvalidArgumentException The property does not exist on the model, or is static or {@see Transient}.
 	 */
 	private static function column(string $property): string {
 		if ($property !== 'id') {
 			$model = new ReflectionClass(static::class);
-			if (!$model->hasProperty($property) || $model->getProperty($property)->isStatic()) {
+			if (!$model->hasProperty($property) || !self::isPersisted($model->getProperty($property))) {
 				throw new InvalidArgumentException('Unknown property ' . static::class . '::$' . $property);
 			}
 			// foreign keys are stored as <name>_id, same rule as add() and edit()
@@ -312,60 +277,131 @@ class DBStore {
 		return $params ? SQL::select($sql, $types, ...$params) : SQL::select($sql);
 	}
 
+	/**
+	 * Writes all persisted properties (see {@see DBStore::persistedValues()}) to the row of this object.
+	 */
 	public function edit(): void {
-		$qryStr = [];
-		$paramTypes = [];
-		$params = [];
-		$reflectionClass = new ReflectionClass($this);
-
-		foreach ($this as $name => $value) {
-			if ($name === 'id') continue;
-
-			$property = $reflectionClass->getProperty($name);
-			$attributes = $property->getAttributes(ForeignKey::class);
-
-			if (!empty($attributes)) {
-				// Handle foreign key
-				$columnName = preg_match('/(_id|Id)$/', $name) ? $name : $name . '_id';
-				$qryStr[] = $columnName;
-
-				if (is_object($value)) {
-					$params[] = $value->id ?? null;
-				} else {
-					$params[] = $value;
-				}
-				$paramTypes[] = 'i';
-			} else {
-				$qryStr[] = $name;
-				switch (self::_getType($value)) {
-					case 'class':
-						$params[] = $value->id;
-						$paramTypes[] = 'i';
-						break;
-					case 'enum':
-						$params[] = $value->value;
-						$paramTypes[] = 's';
-						break;
-					case 'object':
-					case 'array':
-						$params[] = serialize($value);
-						$paramTypes[] = 's';
-						break;
-					default:
-						$params[] = $value;
-						$paramTypes[] = self::_varTypeToDbType($value);
-						break;
-				}
-			}
-		}
-
-		$paramTypes[] = 'i';
-		$params[] = $this->id;
-
-		SQL::iud('UPDATE `' . $this->_getDbTableName() . '` SET ' . implode(', ', array_map(fn($col) => "`$col` = ?", $qryStr)) . ' WHERE id LIKE ?',
-			implode('', $paramTypes), ...$params);
+		$values = $this->persistedValues();
+		unset($values['id']);
+		$this->update($values);
 	}
 
+	/**
+	 * Writes only the given properties to the row of this object, e.g. `$user->editColumns('password')`. Use it
+	 * when the other properties of the object may be outdated and must not overwrite newer values.
+	 *
+	 * @param string ...$properties Names of persisted, initialized properties.
+	 *
+	 * @throws InvalidArgumentException A name is not a persisted property, or the property is not initialized.
+	 */
+	public function editColumns(string ...$properties): void {
+		$all = $this->persistedValues();
+		$values = [];
+		foreach ($properties as $property) {
+			if ($property === 'id' || !array_key_exists($property, $all)) {
+				throw new InvalidArgumentException('Cannot edit ' . static::class . '::$' . $property);
+			}
+			$values[$property] = $all[$property];
+		}
+		$this->update($values);
+	}
+
+	/**
+	 * @param array<string, mixed> $values Property name => value, without id.
+	 */
+	private function update(array $values): void {
+		if ($values === []) {
+			return;
+		}
+		[$columns, $types, $params] = $this->toColumns($values);
+		self::write('UPDATE `' . $this->_getDbTableName() . '` SET ' . implode(', ', array_map(fn($column) => "`$column` = ?", $columns)) . ' WHERE id LIKE ?',
+			$types . 'i', ...[...$params, $this->id]);
+	}
+
+	/**
+	 * Converts property values into what is written to the database: foreign keys become `<name>_id` with the id
+	 * of the referenced object, enums their value, other objects and arrays are serialized.
+	 *
+	 * @param array<string, mixed> $values Property name => value.
+	 *
+	 * @return array{0: string[], 1: string, 2: array} Column names, bind types, bind values.
+	 */
+	private function toColumns(array $values): array {
+		$reflectionClass = new ReflectionClass($this);
+		$columns = [];
+		$types = '';
+		$params = [];
+
+		foreach ($values as $name => $value) {
+			if (!empty($reflectionClass->getProperty($name)->getAttributes(ForeignKey::class))) {
+				// Foreign key: column <name>_id unless the name already ends with Id or _id
+				$columns[] = preg_match('/(_id|Id)$/', $name) ? $name : $name . '_id';
+				$params[] = is_object($value) ? ($value->id ?? null) : $value;
+				$types .= 'i';
+				continue;
+			}
+
+			$columns[] = $name;
+			switch (self::_getType($value)) {
+				case 'class':
+					$params[] = $value->id;
+					$types .= 'i';
+					break;
+				case 'enum':
+					$params[] = $value->value;
+					$types .= 's';
+					break;
+				case 'object':
+				case 'array':
+					$params[] = serialize($value);
+					$types .= 's';
+					break;
+				default:
+					$params[] = $value;
+					$types .= self::_varTypeToDbType($value);
+					break;
+			}
+		}
+		return [$columns, $types, $params];
+	}
+
+	/**
+	 * Runs an INSERT/UPDATE of add() or edit(), escaping strings unless the model sets
+	 * {@see DBStore::$storeRawStrings}.
+	 */
+	private static function write(string $sql, string $types, mixed ...$params): int {
+		return static::$storeRawStrings ? SQL::iud_escaped($sql, $types, ...$params) : SQL::iud($sql, $types, ...$params);
+	}
+
+	/**
+	 * The values that add() and edit() write: every initialized, non-static, non-private property that is not
+	 * marked {@see Transient}, in declaration order. Private properties are skipped because they were never
+	 * visible to the former `foreach ($this ...)` either. Transient properties are skipped before they are
+	 * read, so property hooks on them (e.g. lazy loading) are not triggered by saving.
+	 *
+	 * @return array<string, mixed> Property name => value.
+	 */
+	private function persistedValues(): array {
+		$values = [];
+		foreach ((new ReflectionClass($this))->getProperties() as $property) {
+			if ($property->isPrivate() || !self::isPersisted($property) || !$property->isInitialized($this)) {
+				continue;
+			}
+			$values[$property->getName()] = $property->getValue($this);
+		}
+		return $values;
+	}
+
+	/**
+	 * Whether a property is a database column: not static and not marked {@see Transient}.
+	 *
+	 * @param \ReflectionProperty $property
+	 *
+	 * @return bool
+	 */
+	private static function isPersisted(\ReflectionProperty $property): bool {
+		return !$property->isStatic() && empty($property->getAttributes(Transient::class));
+	}
 
 	public function delete(): void {
 		SQL::iud('DELETE FROM `' . $this->_getDbTableName() . '` WHERE id = ?', 'i', $this->id);
@@ -380,6 +416,9 @@ class DBStore {
 		$properties = $reflectionClass->getProperties();
 
 		foreach ($properties as $property) {
+			if (!self::isPersisted($property)) {
+				continue;
+			}
 			$type = $property->getType();
 			$attributes = $property->getAttributes(ForeignKey::class);
 			$propertyName = $property->getName();
@@ -520,7 +559,7 @@ class DBStore {
 		$constraints = [];
 
 		foreach ($properties as $property) {
-			if ($property->name === 'id') {
+			if ($property->name === 'id' || !self::isPersisted($property)) {
 				continue;
 			}
 
