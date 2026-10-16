@@ -511,10 +511,12 @@ class DBStore {
 			case 'string':
 			case 'object':
 				return 's';
-			case 'int':
-			case 'class':
 			case 'float':
-			case 'double':
+			case 'double': // gettype() of a float
+				return 'd';
+			case 'int':
+			case 'integer': // gettype() of an int
+			case 'class':
 			case 'boolean':
 				return 'i';
 		}
