@@ -107,20 +107,33 @@ class DBStore {
 	// property names must be real model properties, and all values (even LIMIT/OFFSET) are bound as
 	// parameters. That is what makes it safe to feed these methods with data derived from user input.
 	//
+	// A name can also be a property of a relation, `relation.property` (e.g. `event.name` on a Booking): the
+	// related table is then LEFT JOINed. A relation is a property typed as a model (`?Event $event`), a
+	// {@see ForeignKey} or a {@see Relation}. Only one level deep. Names of
+	// {@see DBStore::computedColumns()} are accepted as well.
+	//
 	// All methods are static and operate on the model they are called on (Group::findPaged() queries the
 	// groups table). The helpers below are private; `self::` calls keep the called class (late static
 	// binding), which is why they can use `static::class` to find out which model is meant.
 	// ---------------------------------------------------------------------
 
 	/**
-	 * The list query of this model, for lists whose rows would be too slow to hydrate as model objects (e.g.
-	 * because the model loads its relations). Override it to join the relations; the Datatable component then
-	 * loads and counts its rows with it instead of {@see DBStore::findPaged()} and {@see DBStore::countWhere()}.
+	 * Upper limit for findPaged() and findRows(), whatever the caller asks for. A last line of defence against
+	 * code that passes an unchecked page size; the Datatable component caps the size much lower itself.
 	 *
-	 * @return ListQuery|null Null (default) = the model has none; use findPaged() and countWhere().
+	 * @var int
 	 */
-	public static function listQuery(): ?ListQuery {
-		return null;
+	private const MAX_PAGE_SIZE = 1000;
+
+	/**
+	 * Values that are computed in SQL rather than stored, usable like properties in conditions, sorting and
+	 * {@see DBStore::findRows()}. Override to add some; the expressions come from the code, never from a request.
+	 * Columns of the model's table must be qualified with the table name.
+	 *
+	 * @return array<string, string> Name => SQL expression.
+	 */
+	protected static function computedColumns(): array {
+		return [];
 	}
 
 	/**
@@ -134,8 +147,8 @@ class DBStore {
 	 * @throws InvalidArgumentException The condition names a property that is not a property of this model.
 	 */
 	public static function countWhere(?Condition $where = null): int {
-		[$whereSql, $params] = ListQuery::compileWhere($where, self::column(...));
-		$row = ListQuery::run(false, 'SELECT COUNT(*) AS cnt FROM ' . self::quotedTable() . $whereSql, $params);
+		[$from, $whereSql, , , $params] = self::compileQuery($where);
+		$row = self::run(false, 'SELECT COUNT(*) AS cnt ' . $from . $whereSql, $params);
 		return is_array($row) ? (int)($row['cnt'] ?? 0) : 0;
 	}
 
@@ -152,7 +165,7 @@ class DBStore {
 	 *                                                         `[property, 'asc'|'desc']`. The property is a model
 	 *                                                         property name (not a column name). Empty = database
 	 *                                                         default order, which is not guaranteed to be stable.
-	 * @param int                                     $limit   Rows per page, 1 to {@see ListQuery::MAX_PAGE_SIZE}.
+	 * @param int                                     $limit   Rows per page, 1 to {@see DBStore::MAX_PAGE_SIZE}.
 	 * @param int                                     $offset  Number of rows to skip, 0 or more.
 	 *
 	 * @return static[] The model objects of the page (empty array if there are none), created like those of
@@ -162,14 +175,104 @@ class DBStore {
 	 *                                  asc/desc, or a property that does not exist on this model.
 	 */
 	public static function findPaged(?Condition $where, array $orderBy, int $limit, int $offset = 0): array {
-		ListQuery::checkPage($limit, $offset);
-		[$whereSql, $params] = ListQuery::compileWhere($where, self::column(...));
-
-		$sql = 'SELECT * FROM ' . self::quotedTable() . $whereSql
-			. ListQuery::orderSql($orderBy, self::column(...))
-			. ' LIMIT ? OFFSET ?';
-		$rows = ListQuery::run(true, $sql, [...$params, $limit, $offset]);
+		$rows = self::findPage(null, $where, $orderBy, $limit, $offset);
 		return empty($rows) ? [] : self::autocastArray($rows);
+	}
+
+	/**
+	 * Like findPaged(), but loads only the given fields as plain objects instead of whole model objects. For
+	 * lists of models that are slow to create, e.g. because they load their relations: their names can be
+	 * loaded as `relation.name` instead.
+	 *
+	 * ```php
+	 * Booking::findRows(['token', 'event.name'], $where, [['event.name', 'asc']], 25);
+	 * // [(object)['token' => 'AB12CD', 'event.name' => 'Summer camp'], ...]
+	 * ```
+	 *
+	 * @param string[]       $fields  Property names, `relation.property` names or computed columns. They are the
+	 *                                property names of the returned objects. Values come as the database returns
+	 *                                them (e.g. an enum as its value, a relation as its id).
+	 * @param Condition|null $where   As findPaged().
+	 * @param array          $orderBy As findPaged().
+	 * @param int            $limit   As findPaged().
+	 * @param int            $offset  As findPaged().
+	 *
+	 * @return object[]
+	 *
+	 * @throws InvalidArgumentException As findPaged(), or no fields.
+	 */
+	public static function findRows(array $fields, ?Condition $where, array $orderBy, int $limit, int $offset = 0): array {
+		if ($fields === []) {
+			throw new InvalidArgumentException('No fields');
+		}
+		$rows = self::findPage($fields, $where, $orderBy, $limit, $offset);
+		// The SQL class also returns every value under its numeric index
+		return array_map(fn(array $row) => (object)array_intersect_key($row, array_flip($fields)), $rows ?? []);
+	}
+
+	/**
+	 * The query of findPaged() and findRows().
+	 *
+	 * @param string[]|null $fields The names to select; null = all columns of the model's table.
+	 *
+	 * @return array|null The rows.
+	 */
+	private static function findPage(?array $fields, ?Condition $where, array $orderBy, int $limit, int $offset): ?array {
+		if ($limit < 1 || $limit > self::MAX_PAGE_SIZE || $offset < 0) {
+			throw new InvalidArgumentException('Invalid limit or offset');
+		}
+		[$from, $whereSql, $orderSql, $select, $params] = self::compileQuery($where, $orderBy, $fields ?? []);
+		$select = $fields === null ? self::quotedTable() . '.*' : implode(', ', $select);
+		$sql = 'SELECT ' . $select . ' ' . $from . $whereSql . $orderSql . ' LIMIT ? OFFSET ?';
+		return self::run(true, $sql, [...$params, $limit, $offset]);
+	}
+
+	/**
+	 * Compiles the parts of a query on this model, joining the relations that the names use.
+	 *
+	 * @param Condition|null $where   The filter, or null for none.
+	 * @param array          $orderBy Sort criteria as `[name, 'asc'|'desc']`.
+	 * @param string[]       $fields  Names to select, each compiled to `column AS name`.
+	 *
+	 * @return array{0: string, 1: string, 2: string, 3: string[], 4: array} The FROM clause with the joins, the
+	 *         WHERE clause and the ORDER BY clause (each with a leading space, or empty), the select list and the
+	 *         values to bind in placeholder order.
+	 *
+	 * @throws InvalidArgumentException An unknown name or a sort direction other than asc/desc.
+	 */
+	private static function compileQuery(?Condition $where, array $orderBy = [], array $fields = []): array {
+		$table = self::quotedTable();
+		$joins = [];
+		$column = function (string $name) use ($table, &$joins): string {
+			if (!str_contains($name, '.')) {
+				return static::computedColumns()[$name] ?? $table . '.' . self::column($name);
+			}
+			[$relation, $property] = explode('.', $name, 2);
+			[$class, $foreignKey] = self::relation($relation);
+			$alias = self::quote($relation);
+			$joins[$relation] ??= ' LEFT JOIN ' . self::quote(self::S_getDbTableName($class)) . ' AS ' . $alias
+				. ' ON ' . $alias . '.`id` = ' . $table . '.' . self::quote($foreignKey);
+			return $alias . '.' . self::quote(self::columnName($property, $class));
+		};
+
+		[$whereSql, $params] = $where === null ? ['', []] : $where->compile($column);
+		$order = [];
+		foreach ($orderBy as [$name, $direction]) {
+			$order[] = $column($name) . match ($direction) {
+					'asc' => ' ASC',
+					'desc' => ' DESC',
+					default => throw new InvalidArgumentException('Invalid sort direction'),
+				};
+		}
+		$select = array_map(fn(string $name) => $column($name) . ' AS ' . self::quote($name), $fields);
+
+		return [
+			'FROM ' . $table . implode('', $joins),
+			$whereSql === '' ? '' : ' WHERE ' . $whereSql,
+			$order ? ' ORDER BY ' . implode(', ', $order) : '',
+			$select,
+			$params,
+		];
 	}
 
 	/**
@@ -180,9 +283,6 @@ class DBStore {
 	 * (found by reflection; `self::` calls forward the called class, so `static::class` is that model).
 	 * Anything else, including every string that merely looks like SQL, is rejected with an exception.
 	 *
-	 * Properties with the {@see ForeignKey} attribute are stored in a column named `<property>_id`, the same
-	 * rule that add() and edit() apply, unless the name already ends in `_id` or `Id`.
-	 *
 	 * @param string $property Name of a model property.
 	 *
 	 * @return string The column name in backticks, e.g. `` `name` ``.
@@ -190,17 +290,57 @@ class DBStore {
 	 * @throws InvalidArgumentException The property does not exist on the model, or is static or {@see Transient}.
 	 */
 	private static function column(string $property): string {
-		if ($property !== 'id') {
-			$model = new ReflectionClass(static::class);
-			if (!$model->hasProperty($property) || !self::isPersisted($model->getProperty($property))) {
-				throw new InvalidArgumentException('Unknown property ' . static::class . '::$' . $property);
-			}
-			// foreign keys are stored as <name>_id, same rule as add() and edit()
-			if ($model->getProperty($property)->getAttributes(ForeignKey::class) && !preg_match('/(_id|Id)$/', $property)) {
-				$property .= '_id';
-			}
+		return self::quote(self::columnName($property));
+	}
+
+	/**
+	 * The column of a property, see column(). Properties with the {@see ForeignKey} attribute are stored in a
+	 * column named `<property>_id`, the same rule that add() and edit() apply, unless the name already ends in
+	 * `_id` or `Id`.
+	 *
+	 * @param string      $property Name of a property.
+	 * @param string|null $class    The model, null = the called one.
+	 *
+	 * @throws InvalidArgumentException The property does not exist on the model, or is static or {@see Transient}.
+	 */
+	private static function columnName(string $property, ?string $class = null): string {
+		$class ??= static::class;
+		if ($property === 'id') {
+			return $property;
 		}
-		return ListQuery::quote($property);
+		$model = new ReflectionClass($class);
+		if (!$model->hasProperty($property) || !self::isPersisted($model->getProperty($property))) {
+			throw new InvalidArgumentException('Unknown property ' . $class . '::$' . $property);
+		}
+		// foreign keys are stored as <name>_id, same rule as add() and edit()
+		if ($model->getProperty($property)->getAttributes(ForeignKey::class) && !preg_match('/(_id|Id)$/', $property)) {
+			$property .= '_id';
+		}
+		return $property;
+	}
+
+	/**
+	 * The model a relation property points to and the column that holds its id: the class of a
+	 * {@see ForeignKey} or {@see Relation} attribute, otherwise the property's type. The class must be a DBStore
+	 * model or declare its table with {@see TableName} (for models that load themselves).
+	 *
+	 * @param string $property Name of a model property.
+	 *
+	 * @return array{0: class-string, 1: string} The related model and the column.
+	 *
+	 * @throws InvalidArgumentException The property does not exist on the model or is no relation.
+	 */
+	private static function relation(string $property): array {
+		$column = self::columnName($property);
+		$reflection = (new ReflectionClass(static::class))->getProperty($property);
+		$attribute = ($reflection->getAttributes(ForeignKey::class) ?: $reflection->getAttributes(Relation::class))[0] ?? null;
+		$type = $reflection->getType();
+		$class = $attribute?->getArguments()[0]
+			?? ($type instanceof \ReflectionNamedType && !$type->isBuiltin() ? $type->getName() : null);
+		if ($class === null || !(is_subclass_of($class, self::class) || (class_exists($class) && (new ReflectionClass($class))->getAttributes(TableName::class)))) {
+			throw new InvalidArgumentException('Not a relation: ' . static::class . '::$' . $property);
+		}
+		return [$class, $column];
 	}
 
 	/**
@@ -210,7 +350,47 @@ class DBStore {
 	 * @return string The table name in backticks.
 	 */
 	private static function quotedTable(): string {
-		return ListQuery::quote(self::S_getDbTableName(static::class));
+		return self::quote(self::S_getDbTableName(static::class));
+	}
+
+	/**
+	 * Quotes an identifier (table or column name) with backticks and doubles any backtick inside it, so the
+	 * name cannot end the quoting early. Defence in depth: names are already whitelisted before they get here.
+	 *
+	 * @param string $identifier The name to quote.
+	 *
+	 * @return string The quoted name.
+	 */
+	private static function quote(string $identifier): string {
+		return '`' . str_replace('`', '``', $identifier) . '`';
+	}
+
+	/**
+	 * Runs a prepared statement through the application's SQL class, with the values bound as parameters.
+	 *
+	 * The bind type string (one letter per value) is derived from the PHP types: int = `i`, float = `d`,
+	 * everything else = `s`. Without values the statement is run without binding.
+	 *
+	 * Assumes the signature `SQL::select($sql, $types, ...$params)` (one row) and `SQL::select_array(...)` (all
+	 * rows) of the application's SQL class; adjust here if it differs.
+	 *
+	 * @param bool   $allRows true = fetch all rows (`select_array`); false = fetch one row (`select`).
+	 * @param string $sql     The statement, with `?` placeholders.
+	 * @param array  $params  The values for the placeholders, in order.
+	 *
+	 * @return mixed What the SQL class returns: a list of rows or a single row, empty/null if there is none.
+	 */
+	private static function run(bool $allRows, string $sql, array $params): mixed {
+		$types = implode('', array_map(fn($p) => match (true) {
+			is_int($p) => 'i',
+			is_float($p) => 'd',
+			default => 's',
+		}, $params));
+
+		if ($allRows) {
+			return $params ? SQL::select_array($sql, $types, ...$params) : SQL::select_array($sql);
+		}
+		return $params ? SQL::select($sql, $types, ...$params) : SQL::select($sql);
 	}
 
 	/**
