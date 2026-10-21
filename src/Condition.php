@@ -4,7 +4,7 @@ declare(strict_types=1);
 /**
  * Condition: a WHERE clause that is assembled from objects, never from SQL text.
  *
- * Part of the DBStore query layer, see {@see DBStore::findPaged()}. Used by the Datatable component
+ * Part of the DBStore query layer, see {@see DBStore::findPaged()} and {@see ListQuery}. Used by the Datatable component
  * ({@see \App\Models\Helpers\Elements\Datatable\Datatable}) but independent of it.
  */
 

@@ -113,12 +113,15 @@ class DBStore {
 	// ---------------------------------------------------------------------
 
 	/**
-	 * Upper limit for findPaged(), whatever the caller asks for. A last line of defence against code that
-	 * passes an unchecked page size; the Datatable component caps the size much lower itself.
+	 * The list query of this model, for lists whose rows would be too slow to hydrate as model objects (e.g.
+	 * because the model loads its relations). Override it to join the relations; the Datatable component then
+	 * loads and counts its rows with it instead of {@see DBStore::findPaged()} and {@see DBStore::countWhere()}.
 	 *
-	 * @var int
+	 * @return ListQuery|null Null (default) = the model has none; use findPaged() and countWhere().
 	 */
-	private const MAX_PAGE_SIZE = 1000;
+	public static function listQuery(): ?ListQuery {
+		return null;
+	}
 
 	/**
 	 * Counts the rows of this model's table that match a condition, using `SELECT COUNT(*)`, so no rows are
@@ -131,8 +134,8 @@ class DBStore {
 	 * @throws InvalidArgumentException The condition names a property that is not a property of this model.
 	 */
 	public static function countWhere(?Condition $where = null): int {
-		[$whereSql, $params] = self::compileWhere($where);
-		$row = self::run(false, 'SELECT COUNT(*) AS cnt FROM ' . self::quotedTable() . $whereSql, $params);
+		[$whereSql, $params] = ListQuery::compileWhere($where, self::column(...));
+		$row = ListQuery::run(false, 'SELECT COUNT(*) AS cnt FROM ' . self::quotedTable() . $whereSql, $params);
 		return is_array($row) ? (int)($row['cnt'] ?? 0) : 0;
 	}
 
@@ -149,7 +152,7 @@ class DBStore {
 	 *                                                         `[property, 'asc'|'desc']`. The property is a model
 	 *                                                         property name (not a column name). Empty = database
 	 *                                                         default order, which is not guaranteed to be stable.
-	 * @param int                                     $limit   Rows per page, 1 to {@see DBStore::MAX_PAGE_SIZE}.
+	 * @param int                                     $limit   Rows per page, 1 to {@see ListQuery::MAX_PAGE_SIZE}.
 	 * @param int                                     $offset  Number of rows to skip, 0 or more.
 	 *
 	 * @return static[] The model objects of the page (empty array if there are none), created like those of
@@ -159,41 +162,14 @@ class DBStore {
 	 *                                  asc/desc, or a property that does not exist on this model.
 	 */
 	public static function findPaged(?Condition $where, array $orderBy, int $limit, int $offset = 0): array {
-		if ($limit < 1 || $limit > self::MAX_PAGE_SIZE || $offset < 0) {
-			throw new InvalidArgumentException('Invalid limit or offset');
-		}
-		[$whereSql, $params] = self::compileWhere($where);
-
-		$order = [];
-		foreach ($orderBy as [$property, $direction]) {
-			$order[] = self::column($property) . match ($direction) {
-					'asc' => ' ASC',
-					'desc' => ' DESC',
-					default => throw new InvalidArgumentException('Invalid sort direction'),
-				};
-		}
+		ListQuery::checkPage($limit, $offset);
+		[$whereSql, $params] = ListQuery::compileWhere($where, self::column(...));
 
 		$sql = 'SELECT * FROM ' . self::quotedTable() . $whereSql
-			. ($order ? ' ORDER BY ' . implode(', ', $order) : '')
+			. ListQuery::orderSql($orderBy, self::column(...))
 			. ' LIMIT ? OFFSET ?';
-		$rows = self::run(true, $sql, [...$params, $limit, $offset]);
+		$rows = ListQuery::run(true, $sql, [...$params, $limit, $offset]);
 		return empty($rows) ? [] : self::autocastArray($rows);
-	}
-
-	/**
-	 * Compiles an optional condition into a WHERE clause for this model.
-	 *
-	 * @param Condition|null $where The filter, or null for none.
-	 *
-	 * @return array{0: string, 1: array} The SQL fragment including the leading ` WHERE ` (empty string without a
-	 *                                    condition), and the values to bind in placeholder order.
-	 */
-	private static function compileWhere(?Condition $where): array {
-		if ($where === null) {
-			return ['', []];
-		}
-		[$sql, $params] = $where->compile(self::column(...));
-		return [' WHERE ' . $sql, $params];
 	}
 
 	/**
@@ -224,7 +200,7 @@ class DBStore {
 				$property .= '_id';
 			}
 		}
-		return self::quote($property);
+		return ListQuery::quote($property);
 	}
 
 	/**
@@ -234,47 +210,7 @@ class DBStore {
 	 * @return string The table name in backticks.
 	 */
 	private static function quotedTable(): string {
-		return self::quote(self::S_getDbTableName(static::class));
-	}
-
-	/**
-	 * Quotes an identifier (table or column name) with backticks and doubles any backtick inside it, so the
-	 * name cannot end the quoting early. Defence in depth: names are already whitelisted before they get here.
-	 *
-	 * @param string $identifier The name to quote.
-	 *
-	 * @return string The quoted name.
-	 */
-	private static function quote(string $identifier): string {
-		return '`' . str_replace('`', '``', $identifier) . '`';
-	}
-
-	/**
-	 * Runs a prepared statement through the application's SQL class, with the values bound as parameters.
-	 *
-	 * The bind type string (one letter per value) is derived from the PHP types: int = `i`, float = `d`,
-	 * everything else = `s`. Without values the statement is run without binding.
-	 *
-	 * Assumes the signature `SQL::select($sql, $types, ...$params)` (one row) and `SQL::select_array(...)` (all
-	 * rows) of the application's SQL class; adjust here if it differs.
-	 *
-	 * @param bool   $allRows true = fetch all rows (`select_array`); false = fetch one row (`select`).
-	 * @param string $sql     The statement, with `?` placeholders.
-	 * @param array  $params  The values for the placeholders, in order.
-	 *
-	 * @return mixed What the SQL class returns: a list of rows or a single row, empty/null if there is none.
-	 */
-	private static function run(bool $allRows, string $sql, array $params): mixed {
-		$types = implode('', array_map(fn($p) => match (true) {
-			is_int($p) => 'i',
-			is_float($p) => 'd',
-			default => 's',
-		}, $params));
-
-		if ($allRows) {
-			return $params ? SQL::select_array($sql, $types, ...$params) : SQL::select_array($sql);
-		}
-		return $params ? SQL::select($sql, $types, ...$params) : SQL::select($sql);
+		return ListQuery::quote(self::S_getDbTableName(static::class));
 	}
 
 	/**
