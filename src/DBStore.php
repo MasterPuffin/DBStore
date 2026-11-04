@@ -315,15 +315,14 @@ class DBStore {
 	}
 
 	/**
-	 * The id column of a {@see ForeignKey} property: the attribute's `column`, otherwise `<property>_id`, or the
-	 * property name if it already ends in `_id` or `Id`. Null if the property is no foreign key.
+	 * The id column of a {@see ForeignKey} property: `<property>_id`, or the property name if it already ends in
+	 * `_id` or `Id`. Null if the property is no foreign key.
 	 */
 	private static function foreignKeyColumn(\ReflectionProperty $property): ?string {
-		$attribute = $property->getAttributes(ForeignKey::class)[0] ?? null;
-		if ($attribute === null) {
+		if (empty($property->getAttributes(ForeignKey::class))) {
 			return null;
 		}
-		return $attribute->newInstance()->column ?? (preg_match('/(_id|Id)$/', $property->getName()) ? $property->getName() : $property->getName() . '_id');
+		return preg_match('/(_id|Id)$/', $property->getName()) ? $property->getName() : $property->getName() . '_id';
 	}
 
 	/**
