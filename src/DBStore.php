@@ -294,9 +294,8 @@ class DBStore {
 	}
 
 	/**
-	 * The column of a property, see column(). Properties with the {@see ForeignKey} attribute are stored in a
-	 * column named `<property>_id`, the same rule that add() and edit() apply, unless the name already ends in
-	 * `_id` or `Id`.
+	 * The column of a property, see column(). Properties with the {@see ForeignKey} attribute are stored in the
+	 * column of {@see DBStore::foreignKeyColumn()}, the same rule that add() and edit() apply.
 	 *
 	 * @param string      $property Name of a property.
 	 * @param string|null $class    The model, null = the called one.
@@ -312,11 +311,19 @@ class DBStore {
 		if (!$model->hasProperty($property) || !self::isPersisted($model->getProperty($property))) {
 			throw new InvalidArgumentException('Unknown property ' . $class . '::$' . $property);
 		}
-		// foreign keys are stored as <name>_id, same rule as add() and edit()
-		if ($model->getProperty($property)->getAttributes(ForeignKey::class) && !preg_match('/(_id|Id)$/', $property)) {
-			$property .= '_id';
+		return self::foreignKeyColumn($model->getProperty($property)) ?? $property;
+	}
+
+	/**
+	 * The id column of a {@see ForeignKey} property: the attribute's `column`, otherwise `<property>_id`, or the
+	 * property name if it already ends in `_id` or `Id`. Null if the property is no foreign key.
+	 */
+	private static function foreignKeyColumn(\ReflectionProperty $property): ?string {
+		$attribute = $property->getAttributes(ForeignKey::class)[0] ?? null;
+		if ($attribute === null) {
+			return null;
 		}
-		return $property;
+		return $attribute->newInstance()->column ?? (preg_match('/(_id|Id)$/', $property->getName()) ? $property->getName() : $property->getName() . '_id');
 	}
 
 	/**
@@ -449,9 +456,10 @@ class DBStore {
 		$params = [];
 
 		foreach ($values as $name => $value) {
-			if (!empty($reflectionClass->getProperty($name)->getAttributes(ForeignKey::class))) {
-				// Foreign key: column <name>_id unless the name already ends with Id or _id
-				$columns[] = preg_match('/(_id|Id)$/', $name) ? $name : $name . '_id';
+			$foreignKeyColumn = self::foreignKeyColumn($reflectionClass->getProperty($name));
+			if ($foreignKeyColumn !== null) {
+				// Reading the id of a lazy object does not load it
+				$columns[] = $foreignKeyColumn;
 				$params[] = is_object($value) ? ($value->id ?? null) : $value;
 				$types .= 'i';
 				continue;
@@ -498,8 +506,13 @@ class DBStore {
 	 * @return array<string, mixed> Property name => value.
 	 */
 	private function persistedValues(): array {
+		$reflection = new ReflectionClass($this);
+		// Reflection does not load a lazy object (see lazy()), it would report all its properties as uninitialized
+		if ($reflection->isUninitializedLazyObject($this)) {
+			$reflection->initializeLazyObject($this);
+		}
 		$values = [];
-		foreach ((new ReflectionClass($this))->getProperties() as $property) {
+		foreach ($reflection->getProperties() as $property) {
 			if ($property->isPrivate() || !self::isPersisted($property) || !$property->isInitialized($this)) {
 				continue;
 			}
@@ -524,6 +537,61 @@ class DBStore {
 	}
 
 	/**
+	 * The model with the id, without loading it: a lazy object (PHP lazy ghost) whose `id` is set and that loads
+	 * its row on first access to any other property, as `new Model($id)` would. Reading `id`, comparing with
+	 * `===`, `instanceof` and saving it as a relation do not load it.
+	 *
+	 * Relations typed with a model class are created this way when a row is loaded, so a list of bookings does not
+	 * load every user, event and ticket. A deleted row is noticed only when the object loads: that access throws
+	 * like `new Model($id)`. Use {@see DBStore::isDeleted()} where the related row may be gone.
+	 *
+	 * @return ($id is null ? null : static) Null for a null id, e.g. an optional relation.
+	 */
+	public static function lazy(?int $id): ?static {
+		if ($id === null) {
+			return null;
+		}
+		$reflection = new ReflectionClass(static::class);
+		/** @var static $object A ghost is an instance of the reflected class */
+		$object = $reflection->newLazyGhost(static function (DBStore $object) use ($id): void {
+			$object->__construct($id);
+		});
+		$reflection->getProperty('id')->setRawValueWithoutLazyInitialization($object, $id);
+		return $object;
+	}
+
+	/**
+	 * Whether the row of this lazy object (see {@see DBStore::lazy()}) was deleted: loads it and returns true
+	 * instead of throwing if the row is gone. False for every object that is not lazy or was already loaded.
+	 */
+	public function isDeleted(): bool {
+		$reflection = new ReflectionClass($this);
+		if (!$reflection->isUninitializedLazyObject($this)) {
+			return false;
+		}
+		try {
+			$reflection->initializeLazyObject($this);
+			return false;
+		} catch (Exception $e) {
+			if ($e->getCode() === 404) {
+				return true;
+			}
+			throw $e;
+		}
+	}
+
+	/**
+	 * The related object for a loaded id: a lazy DBStore model if possible (see {@see DBStore::lazy()}),
+	 * otherwise `new $class($value)` as before (other classes, or a value that is no integer, e.g. a public id).
+	 */
+	private static function reference(string $class, mixed $value): object {
+		if (is_int($value) && is_subclass_of($class, self::class) && (new ReflectionClass($class))->isInstantiable()) {
+			return $class::lazy($value);
+		}
+		return new $class($value);
+	}
+
+	/**
 	 * @throws ReflectionException
 	 */
 	protected function autocast(array $query): void {
@@ -540,9 +608,7 @@ class DBStore {
 			$propertyName = $property->getName();
 
 			if (!empty($attributes)) {
-				// Handle foreign key column resolution
-				$columnName = preg_match('/(_id|Id)$/', $propertyName) ? $propertyName : $propertyName . '_id';
-				$foreignKeyId = $query[$columnName] ?? null;
+				$foreignKeyId = $query[self::foreignKeyColumn($property)] ?? null;
 
 				if (!is_null($foreignKeyId)) {
 					// Check if the property expects a class instance or a built-in type (like int)
@@ -558,8 +624,7 @@ class DBStore {
 					}
 
 					if (!$isBuiltin) {
-						$foreignClass = $attributes[0]->getArguments()[0];
-						$this->$propertyName = new $foreignClass($foreignKeyId);
+						$this->$propertyName = self::reference($attributes[0]->getArguments()[0], $foreignKeyId);
 					} else {
 						$this->$propertyName = $foreignKeyId;
 					}
@@ -586,7 +651,7 @@ class DBStore {
 					if ((new ReflectionClass($propertyClassname))->isEnum()) {
 						$this->$propertyName = $propertyClassname::from($value);
 					} else {
-						$this->$propertyName = new $propertyClassname($value);
+						$this->$propertyName = self::reference($propertyClassname, $value);
 					}
 				} else {
 					// Fallback to primitive value or deserialization
@@ -688,8 +753,7 @@ class DBStore {
 			if (!empty($foreignKeyAttributes)) {
 				$foreignKey = $foreignKeyAttributes[0]->newInstance();
 
-				// Detect column name mapping dynamically
-				$columnName = preg_match('/(_id|Id)$/', $property->name) ? $property->name : $property->name . '_id';
+				$columnName = self::foreignKeyColumn($property);
 				$colStr = '`' . $columnName . '` INT(9)';
 
 				$onDelete = null;
